@@ -1,15 +1,29 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
-  "pluginType": "platform",
-  "singular": true,
+  "pluginAlias": "homebridge-yandex-iot",
+  "pluginType": "accessory",
+  "singular": false,
+  "headerDisplay": "Homebridge plugin for connect Yandex IoT devices with homekit",
+  "footerDisplay": "Created by @vondervuflya",
   "schema": {
     "type": "object",
     "properties": {
+      "id": {
+        "title": "Device ID",
+        "type": "string",
+        "required": true,
+        "default": "awd123awd-a123-adwadw12"
+      },
+      "authorization": {
+        "title": "Bearer token",
+        "type": "string",
+        "required": true,
+        "default": "Bearer AWDADSeawd2edAWdawdad21ead"
+      },
       "name": {
         "title": "Name",
         "type": "string",
         "required": true,
-        "default": "Example Dynamic Platform"
+        "default": "Light in Kitchen"
       }
     }
   }
