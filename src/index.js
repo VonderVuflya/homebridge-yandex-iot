@@ -49,6 +49,11 @@ function Lightbulb(log, config, api) {
   this.hue = 250;         // 0-360   – float
   this.saturation = 50;   // 0-100   – float
 
+  // this.brightState = {};
+  this.tempState = {};
+  // this.hueState = {};
+  // this.saturationState = {};
+
   if (this.config.defaultVolume) {
     this.defaultVolume = this.config.defaultVolume;
   } else {
@@ -58,14 +63,6 @@ function Lightbulb(log, config, api) {
   // Создает лампочку
   this.bulb = new Service.Lightbulb(this.config.name);
   this.createBulb();
-
-  // this.bulb.getCharacteristic(Characteristic.Hue)
-  //   .on('get', this.getHue.bind(this))
-  //   .on('set', this.setHue.bind(this));
-  // this.bulb.getCharacteristic(Characteristic.Saturation)
-  //   .on('get', this.getSaturation.bind(this))
-  //   .on('set', this.setSaturation.bind(this));
-
 }
 
 Lightbulb.prototype = {
@@ -93,6 +90,15 @@ Lightbulb.prototype = {
       );
     });
   },
+  getTempValue(value, min, max, isYandex) {
+    if (isYandex) {
+      const inputPercentage = ((value - min) * 100) / (max - min);
+      return Math.floor((inputPercentage * (500 - 140) / 100) + 140);
+    } else {
+      const inputPercentage = ((value - 140) * 100) / (500 - 140);
+      return Math.floor(max - (inputPercentage * (max - min) / 100));
+    }
+  },
   getLightBulbInfo() {
     const urlObject = { url: `${BaseURL}/devices/${this.id}` };
 
@@ -106,28 +112,36 @@ Lightbulb.prototype = {
   createBulb() {
     this.getLightBulbInfo()
       .then(({ capabilities }) => {
-        capabilities.forEach((ability, index) => {
-          if (ability.type === 'devices.capabilities.on_off') {
+        capabilities.forEach(({ type, parameters, state }) => {
+          if (type === 'devices.capabilities.on_off') {
             this.bulb.getCharacteristic(Characteristic.On)
               .on('get', this.getPower.bind(this))
               .on('set', this.setPower.bind(this));
           }
-          if (ability.type === 'devices.capabilities.range') {
-            if (ability.parameters.instance === 'brightness') {
-              this.bright = ability.state.value;
+          if (type === 'devices.capabilities.range') {
+            if (parameters.instance === 'brightness') {
+              this.bright = state.value;
               this.bulb.getCharacteristic(Characteristic.Brightness)
                 .on('get', this.getBrightness.bind(this))
                 .on('set', this.setBrightness.bind(this));
             }
-            // if (ability.parameters.instance === 'temperature') {}
+            // if (parameters.instance === 'temperature') {}
           }
-          if (ability.type === 'devices.capabilities.color_setting') {
-            // работает либо только цвет(hue) либо температура, одновременно не имеет смысла
-            // ColorTemperature – от холодного к теплому – подходит для Mi Lamp 1S
-            this.temp = Math.floor(ability.state.value / 10);
-            this.bulb.getCharacteristic(Characteristic.ColorTemperature)
-              .on('get', this.getTemperature.bind(this))
-              .on('set', this.setTemperature.bind(this));
+          if (type === 'devices.capabilities.color_setting') {
+            if (parameters?.temperature_k) {
+              const { min, max } = parameters.temperature_k;
+              // работает либо только цвет(hue) либо температура, одновременно не имеет смысла
+              // ColorTemperature – от холодного к теплому – подходит для Mi Lamp 1S
+              this.temp = this.getTempValue(state.value, min, max, true);
+              this.bulb.getCharacteristic(Characteristic.ColorTemperature)
+                .on('get', this.getTemperature.bind(this))
+                .on('set', this.setTemperature.bind(this));
+            }
+            if (parameters?.color_model) {
+              this.bulb.getCharacteristic(Characteristic.Hue)
+                .on('get', this.getHue.bind(this))
+                .on('set', this.setHue.bind(this));
+            }
           }
         });
       });
@@ -136,7 +150,7 @@ Lightbulb.prototype = {
     this.getLightBulbInfo().then(({ capabilities }) => {
       const { state } = capabilities.find(el => el.type = 'devices.capabilities.on_off');
       callback(null, state.value);
-    });
+    }).catch();
   },
   setPower(on, callback) {
     const body = {
@@ -163,7 +177,7 @@ Lightbulb.prototype = {
       body: JSON.stringify(body),
     };
 
-    return this.http(urlObject)
+    this.http(urlObject)
       .then(() => callback(null, on))
       .catch((error) => {
         this.log('Error in getLightBulbInfo: '+ error.message);
@@ -171,22 +185,124 @@ Lightbulb.prototype = {
       });
   },
   getBrightness(callback) {
-    callback(null, this.bright);
+    this.getLightBulbInfo().then(({ capabilities }) => {
+      const { state } = capabilities.find(el => el.type = 'devices.capabilities.range' && el.parameters.instance === 'brightness');
+      callback(null, state.value);
+    });
   },
   setBrightness(value, callback) {
-    callback(null, value);
+    const body = {
+      devices: [
+        {
+          id: this.id,
+          actions: [
+            {
+              type: 'devices.capabilities.range',
+              state: {
+                instance: 'brightness',
+                value,
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const urlObject = {
+      url: `${BaseURL}/devices/actions`,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+
+    this.http(urlObject)
+      .then(() => callback(null, value))
+      .catch((error) => {
+        this.log('Error in getLightBulbInfo: '+ error.message);
+        callback(error);
+      });
   },
   getTemperature(callback) {
-    callback(null, this.temp);
+    this.getLightBulbInfo().then(({ capabilities }) => {
+      const tempState = capabilities.find(el => el.type = 'devices.capabilities.color_setting' && el.parameters?.temperature_k);
+      this.tempState = tempState;
+      const { state, parameters: { temperature_k: { min, max }}} = tempState;
+
+      callback(null, this.getTempValue(state.value, min, max, true));
+    });
   },
   setTemperature(value, callback) {
-    callback(null, value);
+    const { min, max } = this.tempState.parameters.temperature_k;
+    const bodyValue = this.getTempValue(value, min, max );
+    const body = {
+      devices: [
+        {
+          id: this.id,
+          actions: [
+            {
+              type: 'devices.capabilities.color_setting',
+              state: {
+                instance: 'temperature_k',
+                value: bodyValue,
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const urlObject = {
+      url: `${BaseURL}/devices/actions`,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+
+    this.http(urlObject)
+      .then(() => callback(null, value))
+      .catch((error) => {
+        this.log('Error in getLightBulbInfo: '+ error.message);
+        callback(error);
+      });
   },
   getHue(callback) {
-    callback(null, this.hue);
+    this.getLightBulbInfo().then(({ capabilities }) => {
+      const { state } = capabilities.find(el => el.type = 'devices.capabilities.color_setting' && el.parameters?.color_model);
+      callback(null, state.value);
+    });
   },
   setHue(value, callback) {
-    callback(null, value);
+    this.log('Hue', { id: this.id, value });
+    const body = {
+      devices: [
+        {
+          id: this.id,
+          actions: [
+            {
+              type: 'devices.capabilities.color_setting',
+              state: {
+                instance: 'color_model',
+                value,
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    const urlObject = {
+      url: `${BaseURL}/devices/actions`,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    };
+
+    this.http(urlObject)
+      .then(() => callback(null, value))
+      .catch((error) => {
+        this.log('Error in getLightBulbInfo: '+ error.message);
+        callback(error);
+      });
   },
   getSaturation(callback) {
     callback(null, this.saturation);
